@@ -82,6 +82,15 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
 .acts button.on{border-color:var(--accent);color:var(--accent)}
 .links{margin-top:14px;font-size:13px;display:flex;gap:16px;flex-wrap:wrap}
 
+.fbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 12px}
+.fbar .chip{font-size:12px;padding:6px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line)}
+.fbtn{padding:8px 13px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:14px}
+.fbtn.on{border-color:var(--accent);color:var(--accent)}
+.fpanel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px 14px;margin:0 0 14px;display:none}
+.fpanel.on{display:block}
+.fpanel h4{margin:12px 0 6px;font-size:13px;color:var(--muted);font-weight:500}
+.fpanel h4:first-child{margin-top:2px}
+.fpanel .seg{margin:0}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:12px 0}
 .card label{display:block;font-size:13px;color:var(--muted);margin:10px 0 6px}
 .code{font-family:ui-monospace,Menlo,monospace;font-size:30px;letter-spacing:4px;color:var(--accent);text-align:center;margin:12px 0;user-select:all}
@@ -105,6 +114,8 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
     <div id="fyBanner"></div>
     <h2>For you</h2>
     <p class="sub" id="fySub">Loading…</p>
+    <div class="fbar" id="fbar"></div>
+    <div class="fpanel" id="fpanel"></div>
     <div id="fyGrid"></div>
     <div class="more"><button class="btn ghost" id="fyMore" style="display:none">Show more</button></div>
   </section>
@@ -171,13 +182,66 @@ function hue(s){let h=0;for(const c of String(s))h=(h*31+c.charCodeAt(0))>>>0;re
 function fbBg(t){const h=hue(t),a=h%360,b=(a+50)%360;return `linear-gradient(160deg,hsl(${a} 50% 30%),hsl(${b} 55% 14%))`}
 let metaSaveT=null;function saveMeta(){clearTimeout(metaSaveT);metaSaveT=setTimeout(()=>{const keys=Object.keys(meta);if(keys.length>1500)keys.slice(0,keys.length-1500).forEach(k=>delete meta[k]);ls.set("meta",meta)},800)}
 
+/* ================= filters ================= */
+const GEN=[["action","Action",28],["adventure","Adventure",12],["animation","Animation",16],["comedy","Comedy",35],["crime","Crime",80],["documentary","Documentary",99],["drama","Drama",18],["family","Family",10751],["fantasy","Fantasy",14],["history","History",36],["horror","Horror",27],["music","Music",10402],["mystery","Mystery",9648],["romance","Romance",10749],["science-fiction","Sci-Fi",878],["thriller","Thriller",53],["war","War",10752],["western","Western",37]];
+const GBYID=Object.fromEntries(GEN.map(g=>[g[2],g[0]]));
+const GBYNAME={"science fiction":"science-fiction","sci-fi":"science-fiction","sci-fi & fantasy":"science-fiction"};GEN.forEach(g=>{GBYNAME[g[1].toLowerCase()]=g[0];GBYNAME[g[0]]=g[0]});
+const DECADES=[["2020s",2020,2029],["2010s",2010,2019],["2000s",2000,2009],["1990s",1990,1999],["1980s",1980,1989],["Older",1900,1979]];
+const RATINGS=[["Any",0],["6+",6],["7+",7],["8+",8]];
+const LENGTHS=[["Any",""],["Under 90 min","lt90"],["Under 2 hrs","lt120"],["2 hrs+","ge120"]];
+let F=ls.get("filters",{g:[],d:[],r:0,len:""});
+const fActive=()=>F.g.length||F.d.length||F.r||F.len;
+function gKeys(m){const x=meta[m.id]||{};const src=m.gids?m.gids.map(i=>GBYID[i]):(m.genres||x.genres||[]).map(n=>GBYNAME[String(n).toLowerCase()]);return src.filter(Boolean)}
+function passes(m){
+  if(!fActive())return true;
+  const x=meta[m.id]||{};
+  if(F.g.length){const gs=gKeys(m);if(gs.length&&!F.g.some(g=>gs.includes(g)))return false;if(!gs.length)return false}
+  if(F.d.length){const y=Number(m.year||x.year);if(!y||!F.d.some(k=>{const d=DECADES.find(z=>z[0]===k);return y>=d[1]&&y<=d[2]}))return false}
+  if(F.r){const v=m.vote||x.vote;if(!v||v<F.r)return false}
+  if(F.len){const rt=m.runtime||x.runtime;if(rt){if(F.len==="lt90"&&rt>=90)return false;if(F.len==="lt120"&&rt>=120)return false;if(F.len==="ge120"&&rt<120)return false}}
+  return true;
+}
+function renderFilters(){
+  const n=F.g.length+F.d.length+(F.r?1:0)+(F.len?1:0);
+  const chips=[...F.g.map(k=>GEN.find(g=>g[0]===k)[1]),...F.d,...(F.r?[F.r+"+ ★"]:[]),...(F.len?[LENGTHS.find(l=>l[1]===F.len)[0]]:[])];
+  document.getElementById("fbar").innerHTML=`<button class="fbtn ${n?"on":""}" id="ftoggle">⚙︎ Filters${n?` (${n})`:""}</button>${chips.map(c=>`<span class="chip">${esc(c)}</span>`).join("")}${n?`<button class="fbtn" id="fclear">Clear</button>`:""}`;
+  const seg=(name,opts,isOn)=>`<div class="seg">${opts.map(([l,v])=>`<button data-f="${name}" data-val="${v}" class="${isOn(v)?"on":""}">${l}</button>`).join("")}</div>`;
+  document.getElementById("fpanel").innerHTML=`<h4>Genres (any of)</h4>${seg("g",GEN.map(g=>[g[1],g[0]]),v=>F.g.includes(v))}
+    <h4>Decade</h4>${seg("d",DECADES.map(d=>[d[0],d[0]]),v=>F.d.includes(v))}
+    <h4>Rating</h4>${seg("r",RATINGS,v=>Number(v)===F.r)}
+    <h4>Length</h4>${seg("len",LENGTHS,v=>v===F.len)}
+    <div class="row" style="margin-top:14px"><button class="btn small" id="fdone">Show results</button></div>`;
+}
+let fTimer=null;
+function setFilter(name,val){
+  if(name==="g"||name==="d"){const a=F[name];F[name]=a.includes(val)?a.filter(x=>x!==val):[...a,val]}
+  else if(name==="r")F.r=Number(val);else F.len=val;
+  ls.set("filters",F);renderFilters();document.getElementById("fpanel").classList.add("on");
+  clearTimeout(fTimer);fTimer=setTimeout(()=>applyFilters(),500);
+}
+function applyFilters(){disc={list:[],page:0,done:false,sig:""};showMoreFY(true)}
+// TMDB discover top-up that matches filters
+let disc={list:[],page:0,done:false,sig:""};
+async function discoverMore(){
+  if(!cfg.tmdb||disc.done)return;
+  const sig=JSON.stringify(F);if(disc.sig!==sig)disc={list:[],page:0,done:false,sig};
+  const p={sort_by:"popularity.desc","vote_count.gte":"150",include_adult:"false",page:String(disc.page+1)};
+  if(F.g.length)p.with_genres=F.g.map(k=>GEN.find(g=>g[0]===k)[2]).join("|");
+  if(F.d.length){const ds=F.d.map(k=>DECADES.find(z=>z[0]===k));p["primary_release_date.gte"]=Math.min(...ds.map(d=>d[1]))+"-01-01";p["primary_release_date.lte"]=Math.max(...ds.map(d=>d[2]))+"-12-31"}
+  if(F.r)p["vote_average.gte"]=String(F.r);
+  if(F.len==="lt90")p["with_runtime.lte"]="89";if(F.len==="lt120")p["with_runtime.lte"]="119";if(F.len==="ge120")p["with_runtime.gte"]="120";
+  if(!p["primary_release_date.lte"])p["primary_release_date.lte"]=new Date().toISOString().slice(0,10);
+  const d=await tmdb("/discover/movie",p);disc.page++;if(disc.page>=(d.total_pages||1))disc.done=true;
+  disc.list=disc.list.concat((d.results||[]).map(fromTmdb).filter(Boolean));
+}
+
 /* ================= movie model ================= */
 // m = {id (tmdb string), tmdb, trakt, slug, imdb, title, year, overview, runtime, vote, genres, poster}
 function fromTrakt(t){if(!t)return null;const ids=t.ids||{};const id=ids.tmdb?String(ids.tmdb):null;if(!id)return null;
   const m={id,tmdb:ids.tmdb,trakt:ids.trakt,slug:ids.slug,imdb:ids.imdb,title:t.title,year:t.year,overview:t.overview,runtime:t.runtime,vote:t.rating?Math.round(t.rating*10)/10:null,genres:t.genres};
   return mergeMeta(m)}
 function fromTmdb(t){if(!t||!t.id)return null;const id=String(t.id);
-  const m={id,tmdb:t.id,title:t.title||t.name,year:(t.release_date||"").slice(0,4)||null,overview:t.overview,vote:t.vote_average?Math.round(t.vote_average*10)/10:null,poster:t.poster_path||null,votes:t.vote_count};
+  const m={id,tmdb:t.id,title:t.title||t.name,year:(t.release_date||"").slice(0,4)||null,overview:t.overview,vote:t.vote_average?Math.round(t.vote_average*10)/10:null,poster:t.poster_path||null,votes:t.vote_count,gids:t.genre_ids};
   if(m.poster)meta[id]={...(meta[id]||{}),poster:m.poster};
   return mergeMeta(m)}
 function mergeMeta(m){const x=meta[m.id];if(x){for(const k in x)if(m[k]==null||m[k]==="")m[k]=x[k]}return m}
@@ -224,13 +288,13 @@ function findMovie(id,src){return (lists[src]||[]).find(m=>m.id===id)||[...lists
 function removeTile(id){document.querySelectorAll(`.tile[data-id="${id}"]`).forEach(t=>{if(t.dataset.src!=="wl"||!U.watchlist.has(id)){t.classList.add("gone");setTimeout(()=>t.remove(),260)}})}
 
 /* ================= For You ================= */
-let fyAll=[],fyShown=0;const PAGE=24;let fyPage=1;
+let fyAll=[],fyShown=0;const PAGE=24;
 async function loadForYou(){
   const sub=document.getElementById("fySub"),g=document.getElementById("fyGrid");
   document.getElementById("fyBanner").innerHTML=!token?`<div class="banner"><b>Connect Trakt</b>Sign in with Trakt to get picks based on your history and keep your watchlist in sync. <div style="margin-top:10px"><button class="btn small" data-go="settings">Connect</button></div></div>`
     :!cfg.tmdb?`<div class="banner"><b>Add your TMDB key</b>Posters need your TMDB Read Access Token. <div style="margin-top:10px"><button class="btn small" data-go="settings">Open settings</button></div></div>`:"";
   g.innerHTML=`<div class="loading"><span class="spinner"></span>Finding movies for you…</div>`;
-  fyAll=[];fyShown=0;fyPage=1;
+  fyAll=[];fyShown=0;disc={list:[],page:0,done:false,sig:""};renderFilters();
   try{
     if(token){
       const r=await trakt("/recommendations/movies?limit=100&ignore_collected=false&ignore_watchlisted=true&extended=full");
@@ -240,8 +304,7 @@ async function loadForYou(){
       if(fyAll.length<40&&cfg.tmdb)fyAll=fyAll.concat(await tmdbFromFavorites());
     }else if(cfg.tmdb){
       fyAll=await tmdbFromFavorites();
-      if(!fyAll.length){const d=await tmdb("/trending/movie/week");fyAll=d.results.map(fromTmdb).filter(Boolean);sub.textContent="Trending this week. Connect Trakt to personalize."}
-      else sub.textContent="Based on movies you liked here.";
+      sub.textContent=fyAll.length?"Based on movies you liked here.":"Popular movies. Connect Trakt to personalize.";
     }else{sub.textContent="";g.innerHTML=`<div class="empty">Add your TMDB key and connect Trakt in Settings to get started.</div>`;return}
   }catch(e){sub.textContent="";g.innerHTML=`<div class="empty">Couldn’t load recommendations (${esc(e.message)}). Check Settings and try again.</div>`;return}
   dedupe();showMoreFY(true);
@@ -255,15 +318,20 @@ async function tmdbFromFavorites(){
 }
 function dedupe(){const seen=new Set();fyAll=fyAll.filter(m=>{if(seen.has(m.id))return false;seen.add(m.id);return true})}
 async function showMoreFY(reset){
-  const g=document.getElementById("fyGrid");
-  let avail=fyAll.filter(m=>!isHandled(m.id));
-  if(!reset&&fyShown>=avail.length&&cfg.tmdb&&!token){ // extend trending when not connected
-    fyPage++;try{const d=await tmdb("/trending/movie/week",{page:fyPage});fyAll=fyAll.concat(d.results.map(fromTmdb).filter(Boolean));dedupe();avail=fyAll.filter(m=>!isHandled(m.id))}catch(e){}
+  const g=document.getElementById("fyGrid"),more=document.getElementById("fyMore");
+  const want=reset?PAGE:fyShown+PAGE;
+  const build=()=>{const seen=new Set();return [...fyAll,...(fActive()||!token?disc.list:[])].filter(m=>{if(seen.has(m.id)||isHandled(m.id)||!passes(m))return false;seen.add(m.id);return true})};
+  let avail=build();
+  if(avail.length<want&&cfg.tmdb&&(fActive()||!token)){
+    if(reset)g.innerHTML=`<div class="loading"><span class="spinner"></span>Finding matches…</div>`;
+    for(let i=0;i<4&&avail.length<want&&!disc.done;i++){try{await discoverMore()}catch(e){break}avail=build()}
   }
-  fyShown=reset?Math.min(PAGE,avail.length):Math.min(fyShown+PAGE,avail.length);
-  lists.fy=avail.slice(0,fyShown);
-  g.innerHTML=lists.fy.length?grid(lists.fy,"fy"):`<div class="empty">You’ve gone through every pick. Rate or watch more on Trakt, then pull to refresh.</div>`;
-  document.getElementById("fyMore").style.display=fyShown<avail.length||(!token&&cfg.tmdb)?"":"none";
+  fyShown=Math.min(want,avail.length);lists.fy=avail.slice(0,fyShown);
+  const fromT=lists.fy.filter(m=>fyAll.includes(m)).length;
+  if(fActive())document.getElementById("fySub").textContent=token?`${fromT} Trakt pick${fromT===1?" matches":"s match"} your filters${lists.fy.length>fromT?", plus popular matches from TMDB":""}.`:"Popular movies matching your filters.";
+  else document.getElementById("fySub").textContent=token?"Picked by Trakt from what you've watched and rated.":document.getElementById("fySub").textContent;
+  g.innerHTML=lists.fy.length?grid(lists.fy,"fy"):`<div class="empty">${fActive()?"Nothing matches these filters. Try loosening them.":"You’ve gone through every pick. Rate or watch more on Trakt, then come back."}</div>`;
+  more.style.display=fyShown<avail.length||((fActive()||!token)&&cfg.tmdb&&!disc.done)?"":"none";
   enrich(lists.fy);
 }
 
@@ -297,8 +365,8 @@ async function showRelated(m){
       const seen=new Set();rel=[...a.results,...b.results].map(fromTmdb).filter(x=>x&&x.id!==m.id&&!seen.has(x.id)&&seen.add(x.id));
     }
     if(rel.length<8){try{const d=await trakt(`/movies/${m.slug||m.trakt||m.imdb||m.id}/related?limit=30&extended=full`,{auth:false});rel=rel.concat((d||[]).map(fromTrakt).filter(x=>x&&x.id!==m.id&&!rel.some(y=>y.id===x.id)))}catch(e){}}
-    lists.related=rel.filter(x=>!isHandled(x.id));
-    out.querySelector(".loading").outerHTML=lists.related.length?`<p class="sub">Tap ＋ to save, ✕ to skip. Movies you’ve watched, rated or saved are hidden.</p>${grid(lists.related,"related")}`:`<div class="empty">No new related movies found.</div>`;
+    lists.related=rel.filter(x=>!isHandled(x.id)&&passes(x));
+    out.querySelector(".loading").outerHTML=lists.related.length?`<p class="sub">Tap ＋ to save, ✕ to skip. Hides what you’ve watched, rated or saved${fActive()?" — your filters apply too":""}.</p>${grid(lists.related,"related")}`:`<div class="empty">No new related movies found.</div>`;
     enrich(lists.related);
   }catch(e){const l=out.querySelector(".loading");if(l)l.outerHTML=`<div class="empty">Couldn’t load related movies.</div>`}
 }
@@ -487,7 +555,11 @@ document.body.addEventListener("click",e=>{
   const q=e.target.closest("[data-q]");if(q){e.stopPropagation();act(q.dataset.q,findMovie(q.dataset.id,q.dataset.src));return}
   const o=e.target.closest("[data-open]");if(o){const m=findMovie(o.dataset.open,o.dataset.src);if(o.dataset.src==="search")showRelatedOrOpen(m);else openSheet(m);return}
   const a=e.target.closest("#sheet [data-a]");if(a){act(a.dataset.a,sheetMovie);return}
+  const fb=e.target.closest("[data-f]");if(fb){setFilter(fb.dataset.f,fb.dataset.val);return}
   const id=e.target.id;
+  if(id==="ftoggle"){document.getElementById("fpanel").classList.toggle("on");return}
+  if(id==="fdone"){document.getElementById("fpanel").classList.remove("on");clearTimeout(fTimer);applyFilters();return}
+  if(id==="fclear"){F={g:[],d:[],r:0,len:""};ls.set("filters",F);renderFilters();applyFilters();return}
   if(id==="connect")startDevice();
   else if(id==="altSign")startRedirect();
   else if(id==="backDevice")startDevice();
