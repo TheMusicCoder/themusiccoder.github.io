@@ -131,7 +131,8 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
 
   <!-- WATCHLIST -->
   <section class="view" id="v-list">
-    <h2>Watchlist</h2>
+    <h2 id="libTitle">Watchlist</h2>
+    <div class="seg" id="libSeg"><button data-lib="wl" class="on">🔖 Watchlist</button><button data-lib="liked">👍 Liked</button></div>
     <p class="sub" id="wlSub"></p>
     <div id="wlGrid"></div>
   </section>
@@ -143,7 +144,7 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
     <div class="card">
       <b>Keys</b>
       <label for="tmdbKey">TMDB API Read Access Token (for posters &amp; search)</label>
-      <input type="password" id="tmdbKey" placeholder="eyJhbGciOi…" autocomplete="off">
+      <input type="password" id="tmdbKey" placeholder="Built in — leave blank" autocomplete="off">
       <label for="traktId">Trakt Client ID</label>
       <input type="text" id="traktId" autocomplete="off" spellcheck="false">
       <div class="row" style="margin-top:12px"><button class="btn small" id="saveKeys">Save</button><span class="sub" id="keyStatus" style="margin:0"></span></div>
@@ -155,7 +156,7 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
 <nav class="tabs">
   <button class="on" data-v="foryou"><span class="ic">✨</span>For You</button>
   <button data-v="search"><span class="ic">🔎</span>Search</button>
-  <button data-v="list"><span class="ic">🔖</span>Watchlist</button>
+  <button data-v="list"><span class="ic">🔖</span>My Movies</button>
   <button data-v="settings"><span class="ic">⚙️</span>Settings</button>
 </nav>
 
@@ -165,15 +166,20 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
 
 <script>
 /* ================= config & storage ================= */
+const DEFAULT_TMDB="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJjNzk5YWZlNjUzZGYwMWUxOTM1YmEyYTJiYTYyZGM4YSIsIm5iZiI6MTc3Mjg5NTI1NC42MzM5OTk4LCJzdWIiOiI2OWFjM2MxNjQ4OWM3YmRhNzNhYTg3Y2IiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.rVxZ7Fr3hm-mHE-fCoQyY4yEwlfZqM3BxpbojbMH-7s";
 const DEFAULT_TRAKT_ID="pgv8DAxvFKRMVtevG6bHIH3S8vYZ4iNssPZlQ_Fz6kM";
 const TRAKT_API="https://api.trakt.tv", TRAKT_WEB="https://trakt.tv", TMDB_API="https://api.themoviedb.org/3", IMG="https://image.tmdb.org/t/p/";
 const REDIRECT="http://localhost";
 const ls={get(k,d){try{const v=localStorage.getItem("rp_"+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem("rp_"+k,JSON.stringify(v))}catch(e){}},del(k){try{localStorage.removeItem("rp_"+k)}catch(e){}}};
-const cfg={get tmdb(){return ls.get("tmdb","")},get traktId(){return ls.get("traktId",DEFAULT_TRAKT_ID)}};
+const cfg={get tmdb(){return ls.get("tmdb","")||DEFAULT_TMDB},get traktId(){return ls.get("traktId",DEFAULT_TRAKT_ID)}};
+// one-tap sign-in link: #signin=<base64url json>
+(()=>{const m=location.hash.match(/^#signin=([A-Za-z0-9_-]+)$/);if(!m)return;
+  try{const j=JSON.parse(decodeURIComponent(escape(atob(m[1].replace(/-/g,"+").replace(/_/g,"/")))));if(j.t&&j.t.access_token){ls.set("token",j.t);if(j.u)ls.set("user",j.u);sessionStorage.setItem("rp_linked","1")}}catch(e){}
+  history.replaceState(null,"",location.pathname)})();
 let token=ls.get("token",null);           // {access_token,refresh_token,expires_at}
 let meta=ls.get("meta",{});               // tmdbId -> {poster,overview,runtime,vote,genres,title,year}
 // user sets keyed by tmdb id (string)
-const U={watched:new Set(),rated:new Map(),watchlist:new Map(),hidden:new Set(ls.get("hidden",[]))};
+const U={ratedMovies:new Map(),watched:new Set(),rated:new Map(),watchlist:new Map(),hidden:new Set(ls.get("hidden",[]))};
 const local=ls.get("local",{watchlist:{},rated:{}}); // used when not connected
 
 function toast(m){const t=document.getElementById("toast");t.textContent=m;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2000)}
@@ -275,17 +281,17 @@ function pump(){while(active<6&&queue.length){const id=queue.shift();active++;
 function paintPoster(id){const p=meta[id]?.poster;if(!p)return;document.querySelectorAll(`.tile[data-id="${id}"] .pst`).forEach(el=>{if(!el.querySelector("img"))el.querySelector('.fb')?.remove();el.insertAdjacentHTML('afterbegin',`<img src="${IMG}w342${p}" alt="" loading="lazy">`)})}
 
 /* ================= rendering ================= */
-const lists={fy:[],search:[],related:[],wl:[]};
+const lists={fy:[],search:[],related:[],wl:[],liked:[]};
 function tile(m,src){
   const p=meta[m.id]?.poster||m.poster;const inWL=U.watchlist.has(m.id);
   return `<div class="tile" data-id="${m.id}" data-src="${src}">
     <button class="pst" data-open="${m.id}" data-src="${src}" style="background:${fbBg(m.title)}" aria-label="${esc(m.title)}">${p?`<img src="${IMG}w342${p}" alt="" loading="lazy">`:`<span class="fb">${esc(m.title)}</span>`}${m.vote?`<span class="score">★ ${m.vote}</span>`:""}</button>
-    ${src!=="wl"?`<div class="quick"><button data-q="wl" data-id="${m.id}" data-src="${src}" class="${inWL?"on":""}" aria-label="Add to watchlist">${inWL?"✓":"＋"}</button><button data-q="hide" data-id="${m.id}" data-src="${src}" aria-label="Not interested">✕</button></div>`:""}
+    ${src!=="wl"&&src!=="liked"?`<div class="quick"><button data-q="wl" data-id="${m.id}" data-src="${src}" class="${inWL?"on":""}" aria-label="Add to watchlist">${inWL?"✓":"＋"}</button><button data-q="hide" data-id="${m.id}" data-src="${src}" aria-label="Not interested">✕</button></div>`:""}
     <div class="ttl">${esc(m.title)}</div><div class="yr">${m.year||""}</div></div>`;
 }
 function grid(list,src){return `<div class="grid">${list.map(m=>tile(m,src)).join("")}</div>`}
-function findMovie(id,src){return (lists[src]||[]).find(m=>m.id===id)||[...lists.fy,...lists.search,...lists.related,...lists.wl].find(m=>m.id===id)||(sheetMovie&&sheetMovie.id===id?sheetMovie:null)}
-function removeTile(id){document.querySelectorAll(`.tile[data-id="${id}"]`).forEach(t=>{if(t.dataset.src!=="wl"||!U.watchlist.has(id)){t.classList.add("gone");setTimeout(()=>t.remove(),260)}})}
+function findMovie(id,src){return (lists[src]||[]).find(m=>m.id===id)||[...lists.fy,...lists.search,...lists.related,...lists.wl,...lists.liked].find(m=>m.id===id)||(sheetMovie&&sheetMovie.id===id?sheetMovie:null)}
+function removeTile(id){document.querySelectorAll(`.tile[data-id="${id}"]`).forEach(t=>{if(t.dataset.src==="liked")return;if(t.dataset.src!=="wl"||!U.watchlist.has(id)){t.classList.add("gone");setTimeout(()=>t.remove(),260)}})}
 
 /* ================= For You ================= */
 let fyAll=[],fyShown=0;const PAGE=24;
@@ -372,9 +378,21 @@ async function showRelated(m){
 }
 
 /* ================= Watchlist ================= */
+let libView="wl";
 function renderWatchlist(){
+  document.querySelectorAll("#libSeg button").forEach(x=>x.classList.toggle("on",x.dataset.lib===libView));
+  const where=token?"synced with Trakt":"saved on this device";
+  if(libView==="liked"){
+    lists.liked=[...U.rated.entries()].filter(([,r])=>r>=7).map(([id,r])=>{const m=U.ratedMovies.get(id)||mergeMeta({id,tmdb:Number(id),title:meta[id]?.title||"Movie",year:meta[id]?.year});m.myRating=r;return m})
+      .sort((a,b)=>String(b.rated_at||"").localeCompare(String(a.rated_at||"")));
+    document.getElementById("libTitle").textContent="Liked";
+    document.getElementById("wlSub").textContent=`${lists.liked.length} movies you rated 7 or higher · ${where}`;
+    document.getElementById("wlGrid").innerHTML=lists.liked.length?grid(lists.liked,"liked"):`<div class="empty">No liked movies yet. Tap 👍 on a movie you enjoyed.</div>`;
+    enrich(lists.liked);return;
+  }
   lists.wl=[...U.watchlist.values()];
-  document.getElementById("wlSub").textContent=token?`${lists.wl.length} movies · synced with Trakt`:`${lists.wl.length} movies · saved on this device`;
+  document.getElementById("libTitle").textContent="Watchlist";
+  document.getElementById("wlSub").textContent=`${lists.wl.length} movies · ${where}`;
   document.getElementById("wlGrid").innerHTML=lists.wl.length?grid(lists.wl,"wl"):`<div class="empty">Nothing here yet. Tap ＋ on any movie.</div>`;
   enrich(lists.wl);
 }
@@ -416,7 +434,7 @@ async function act(a,m){
     if(U.watchlist.has(id)){U.watchlist.delete(id);toast("Removed from watchlist");await sync(()=>trakt("/sync/watchlist/remove",{method:"POST",body:{movies:[idsOf(m)]}}))}
     else{U.watchlist.set(id,m);toast("Added to watchlist");removeTile(id);await sync(()=>trakt("/sync/watchlist",{method:"POST",body:{movies:[idsOf(m)]}}))}
   }else if(a==="up"||a==="down"){
-    const rating=a==="up"?8:3;U.rated.set(id,rating);U.watched.add(id);const wasWL=U.watchlist.delete(id);removeTile(id);
+    const rating=a==="up"?8:3;U.rated.set(id,rating);U.ratedMovies.set(id,{...m,rated_at:new Date().toISOString()});U.watched.add(id);const wasWL=U.watchlist.delete(id);removeTile(id);
     toast(a==="up"?"👍 Noted — more like this":"👎 Noted — less like this");
     await sync(async()=>{await trakt("/sync/ratings",{method:"POST",body:{movies:[{...idsOf(m),rating}]}});await trakt("/sync/history",{method:"POST",body:{movies:[idsOf(m)]}});if(wasWL)await trakt("/sync/watchlist/remove",{method:"POST",body:{movies:[idsOf(m)]}})});
   }else if(a==="seen"){
@@ -431,12 +449,12 @@ async function act(a,m){
 }
 function saveLocal(){
   local.watchlist=Object.fromEntries([...U.watchlist.entries()].map(([k,m])=>[k,{id:m.id,tmdb:m.tmdb,title:m.title,year:m.year}]));
-  local.rated=Object.fromEntries(U.rated);local.watched=[...U.watched];ls.set("local",local);
+  local.rated=Object.fromEntries(U.rated);local.ratedMovies=Object.fromEntries([...U.ratedMovies.entries()].map(([k,m])=>[k,{id:m.id,tmdb:m.tmdb,title:m.title,year:m.year,rated_at:m.rated_at}]));local.watched=[...U.watched];ls.set("local",local);
 }
 function loadLocalSets(){
   U.watchlist=new Map(Object.entries(local.watchlist||{}).map(([k,m])=>[k,mergeMeta(m)]));
   U.rated=new Map(Object.entries(local.rated||{}).map(([k,v])=>[k,Number(v)]));
-  U.watched=new Set(local.watched||[]);
+  U.watched=new Set(local.watched||[]);U.ratedMovies=new Map(Object.entries(local.ratedMovies||{}).map(([k,m])=>[k,mergeMeta(m)]));
 }
 
 /* ================= Trakt sync of user lists ================= */
@@ -444,10 +462,11 @@ async function loadTraktSets(){
   const [wl,watched,ratings]=await Promise.all([
     trakt("/sync/watchlist/movies?extended=full").catch(()=>[]),
     trakt("/sync/watched/movies").catch(()=>[]),
-    trakt("/sync/ratings/movies").catch(()=>[])]);
+    trakt("/sync/ratings/movies?extended=full").catch(()=>[])]);
   U.watchlist=new Map();(wl||[]).forEach(x=>{const m=fromTrakt(x.movie);if(m)U.watchlist.set(m.id,m)});
   U.watched=new Set((watched||[]).map(x=>x.movie?.ids?.tmdb).filter(Boolean).map(String));
   U.rated=new Map((ratings||[]).filter(x=>x.movie?.ids?.tmdb).map(x=>[String(x.movie.ids.tmdb),x.rating]));
+  U.ratedMovies=new Map();(ratings||[]).forEach(x=>{const m=fromTrakt(x.movie);if(m){m.rated_at=x.rated_at;U.ratedMovies.set(m.id,m)}});
 }
 
 /* ================= Trakt sign-in (PKCE) ================= */
@@ -532,7 +551,8 @@ async function renderAcct(){
 }
 function renderTraktCard(){
   document.getElementById("traktCard").innerHTML=token
-   ?`<b>Trakt</b><p class="sub" style="margin-top:6px">Connected${traktUser?" as <b>"+esc(traktUser)+"</b>":""}. Your watchlist, ratings and watched history sync both ways.</p><div class="row"><button class="btn small ghost" id="resync">↻ Sync now</button><button class="btn small danger" id="signout">Disconnect</button></div>`
+   ?`<b>Trakt</b><p class="sub" style="margin-top:6px">Connected${traktUser?" as <b>"+esc(traktUser)+"</b>":""}. Your watchlist, ratings and watched history sync both ways.</p><div class="row"><button class="btn small ghost" id="resync">↻ Sync now</button><button class="btn small danger" id="signout">Disconnect</button></div>
+     <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px"><b>Sign in on another device</b><p class="sub" style="margin-top:6px">Makes a link that signs your iPad or another phone in with one tap. Send it to yourself only. Treat it like a password.</p><button class="btn small" id="mkLink">Copy sign-in link</button> <span class="sub" id="linkStatus"></span></div>`
    :`<b>Trakt</b><p class="sub" style="margin-top:6px">Connect your Trakt account so recommendations skip what you’ve watched and your watchlist stays in sync.</p><button class="btn" id="connect">Connect Trakt</button>`;
 }
 
@@ -543,7 +563,7 @@ function switchTab(v){
   window.scrollTo(0,0);
   if(v==="list")renderWatchlist();
   if(v==="foryou"&&lists.fy.some(m=>isHandled(m.id)))showMoreFY(true);
-  if(v==="settings"){document.getElementById("tmdbKey").value=cfg.tmdb;document.getElementById("traktId").value=cfg.traktId;renderTraktCard()}
+  if(v==="settings"){document.getElementById("tmdbKey").value=ls.get("tmdb","");document.getElementById("traktId").value=cfg.traktId;renderTraktCard()}
 }
 document.querySelector("nav.tabs").addEventListener("click",e=>{const b=e.target.closest("[data-v]");if(b)switchTab(b.dataset.v)});
 document.getElementById("acct").addEventListener("click",()=>switchTab("settings"));
@@ -555,6 +575,7 @@ document.body.addEventListener("click",e=>{
   const q=e.target.closest("[data-q]");if(q){e.stopPropagation();act(q.dataset.q,findMovie(q.dataset.id,q.dataset.src));return}
   const o=e.target.closest("[data-open]");if(o){const m=findMovie(o.dataset.open,o.dataset.src);if(o.dataset.src==="search")showRelatedOrOpen(m);else openSheet(m);return}
   const a=e.target.closest("#sheet [data-a]");if(a){act(a.dataset.a,sheetMovie);return}
+  const lb=e.target.closest("[data-lib]");if(lb){libView=lb.dataset.lib;renderWatchlist();return}
   const fb=e.target.closest("[data-f]");if(fb){setFilter(fb.dataset.f,fb.dataset.val);return}
   const id=e.target.id;
   if(id==="ftoggle"){document.getElementById("fpanel").classList.toggle("on");return}
@@ -565,6 +586,13 @@ document.body.addEventListener("click",e=>{
   else if(id==="backDevice")startDevice();
   else if(id==="finishPaste")finishPaste();
   else if(id==="copyCode"){navigator.clipboard?.writeText(document.getElementById("ucode").textContent).then(()=>toast("Code copied")).catch(()=>toast("Long-press the code to copy"))}
+  else if(id==="mkLink"){
+    const b=btoa(unescape(encodeURIComponent(JSON.stringify({t:token,u:traktUser})))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+    const url=location.origin+location.pathname+"#signin="+b;
+    const done=()=>{document.getElementById("linkStatus").textContent="Copied. Paste it into Notes or Messages to yourself, then open it on the other device in Safari.";toast("Sign-in link copied")};
+    if(navigator.share){navigator.share({title:"Reel Picks sign-in",url}).then(done).catch(()=>navigator.clipboard?.writeText(url).then(done))}
+    else navigator.clipboard?.writeText(url).then(done).catch(()=>prompt("Copy this link:",url));
+  }
   else if(id==="signout"){signOut();loadForYou()}
   else if(id==="resync"){boot().then(()=>toast("Synced ✓"))}
   else if(id==="backToResults"){if(searchQ)doSearch(searchQ);else document.getElementById("searchOut").innerHTML=""}
@@ -592,7 +620,8 @@ async function boot(){
   if(document.getElementById("v-list").classList.contains("on"))renderWatchlist();
 }
 boot();
-if(!cfg.tmdb&&!token)switchTab("settings");
+if(sessionStorage.getItem("rp_linked")){sessionStorage.removeItem("rp_linked");setTimeout(()=>toast("Signed in with your link ✓"),600)}
+if(!token)setTimeout(()=>{if(!token)switchTab("settings")},300);
 </script>
 </body>
 </html>
