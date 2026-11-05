@@ -181,7 +181,8 @@ const cfg={get tmdb(){return ls.get("tmdb","")||DEFAULT_TMDB},get traktId(){retu
 (()=>{const m=location.hash.match(/^#signin=([A-Za-z0-9_-]+)$/);if(!m)return;
   try{const j=JSON.parse(decodeURIComponent(escape(atob(m[1].replace(/-/g,"+").replace(/_/g,"/")))));if(j.t&&j.t.access_token){ls.set("token",j.t);if(j.u)ls.set("user",j.u);sessionStorage.setItem("rp_linked","1")}}catch(e){}
   history.replaceState(null,"",location.pathname)})();
-let token=ls.get("token",null);           // {access_token,refresh_token,expires_at}
+let token=ls.get("token",null);
+try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}           // {access_token,refresh_token,expires_at}
 let meta=ls.get("meta",{});               // tmdbId -> {poster,overview,runtime,vote,genres,title,year}
 // user sets keyed by tmdb id (string)
 const U={ratedMovies:new Map(),watched:new Set(),rated:new Map(),watchlist:new Map(),hidden:new Set(ls.get("hidden",[]))};
@@ -270,7 +271,13 @@ async function trakt(path,{method="GET",body,auth=true}={}){
   const h={"Content-Type":"application/json","trakt-api-version":"2","trakt-api-key":cfg.traktId};
   if(auth&&token)h.Authorization="Bearer "+token.access_token;
   let r=await fetch(TRAKT_API+path,{method,headers:h,body:body?JSON.stringify(body):undefined});
-  if(r.status===401&&auth&&token){if(await refreshToken().catch(()=>false)){h.Authorization="Bearer "+token.access_token;r=await fetch(TRAKT_API+path,{method,headers:h,body:body?JSON.stringify(body):undefined})}}
+  if(r.status===401&&auth&&token){
+    const sent=h.Authorization;
+    // if a parallel request already renewed the token, just retry with it
+    let ok=token&&("Bearer "+token.access_token)!==sent?true:await refreshToken().catch(()=>"offline");
+    if(ok===true){h.Authorization="Bearer "+token.access_token;r=await fetch(TRAKT_API+path,{method,headers:h,body:body?JSON.stringify(body):undefined})}
+    else if(ok==="offline")throw new Error("trakt_unreachable");
+  }
   if(r.status===401&&auth){signOut(true);throw new Error("trakt_401")}
   if(!r.ok)throw new Error("trakt_"+r.status);
   if(r.status===204)return null;const txt=await r.text();return txt?JSON.parse(txt):null;
@@ -296,7 +303,7 @@ function tile(m,src){
 }
 function grid(list,src){return `<div class="grid">${list.map(m=>tile(m,src)).join("")}</div>`}
 function findMovie(id,src){return (lists[src]||[]).find(m=>m.id===id)||[...lists.fy,...lists.search,...lists.related,...lists.wl,...lists.liked,...lists.match].find(m=>m.id===id)||(sheetMovie&&sheetMovie.id===id?sheetMovie:null)}
-function removeTile(id){document.querySelectorAll(`.tile[data-id="${id}"]`).forEach(t=>{if(t.dataset.src==="liked")return;if(t.dataset.src!=="wl"||!U.watchlist.has(id)){t.classList.add("gone");setTimeout(()=>t.remove(),260)}})}
+function removeTile(id){document.querySelectorAll(`.tile[data-id="${id}"]`).forEach(t=>{if(t.dataset.src==="liked"||t.dataset.src==="search")return;if(t.dataset.src!=="wl"||!U.watchlist.has(id)){t.classList.add("gone");setTimeout(()=>t.remove(),260)}})}
 
 /* ================= For You ================= */
 let fyAll=[],fyShown=0;const PAGE=24;
@@ -348,35 +355,72 @@ async function showMoreFY(reset){
 
 /* ================= Search & related ================= */
 let searchQ="";
-async function doSearch(q,jump=true){
-  q=q.trim();if(!q)return;searchQ=q;const out=document.getElementById("searchOut");
-  out.innerHTML=`<div class="loading"><span class="spinner"></span>Searching…</div>`;
-  try{
-    let res=[];
-    if(cfg.tmdb){const d=await tmdb("/search/movie",{query:q,include_adult:"false"});res=d.results.map(fromTmdb).filter(Boolean)}
-    else{const d=await trakt("/search/movie?extended=full&query="+encodeURIComponent(q),{auth:false});res=(d||[]).map(x=>fromTrakt(x.movie)).filter(Boolean)}
-    lists.search=res.slice(0,30);
-    if(!lists.search.length){out.innerHTML=`<div class="empty">No movies found for “${esc(q)}”.</div>`;return}
-    const top=lists.search[0];
-    out.innerHTML=`<p class="sub">Results for “${esc(q)}” — tap one to see details and related movies.</p>${grid(lists.search,"search")}`;
-    enrich(lists.search);
-    if(jump&&res[0]&&key(res[0].title)===key(q))showRelated(top);
-  }catch(e){out.innerHTML=`<div class="empty">Search failed (${esc(e.message)}). Add your TMDB key in Settings.</div>`}
+/* ---- forgiving search: TMDB + Trakt + typo-tolerant variants, ranked by similarity ---- */
+function lev(a,b){if(a===b)return 0;const m=a.length,n=b.length;if(!m)return n;if(!n)return m;let prev=Array.from({length:n+1},(_,j)=>j);for(let i=1;i<=m;i++){const cur=[i];for(let j=1;j<=n;j++)cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1));prev=cur}return prev[n]}
+const norm=s=>String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/&/g," and ").replace(/[^a-z0-9 ]/g," ").replace(/\b(the|a|an)\b/g," ").replace(/\s+/g," ").trim();
+function sim(title,q){
+  const t=norm(title),n=norm(q);if(!t||!n)return 0;
+  if(t===n)return 1;
+  const tk=t.replace(/ /g,""),nk=n.replace(/ /g,"");
+  let s=1-lev(tk,nk)/Math.max(tk.length,nk.length);              // whole-title closeness
+  if(tk.startsWith(nk))s=Math.max(s,.75+.2*nk.length/tk.length);  // typed the start of it
+  const tw=t.split(" "),nw=n.split(" ");                          // word-by-word, typo tolerant
+  const wscore=nw.reduce((acc,w)=>acc+Math.max(0,...tw.map(x=>{const d=lev(w,x.slice(0,Math.max(w.length,x.length)));return x.startsWith(w)?1:1-d/Math.max(w.length,x.length)})),0)/nw.length;
+  return Math.max(s,wscore*.9);
 }
+function variants(q){
+  const n=norm(q),out=new Set([q.trim()]);
+  if(n.length>4)out.add(n.slice(0,-1));                 // drop a trailing typo
+  if(n.length>6)out.add(n.slice(0,Math.ceil(n.length*.6)));
+  const words=n.split(" ").filter(w=>w.length>2);
+  if(words.length>1)words.forEach(w=>out.add(w));
+  else if(n.length>=5){out.add(n.slice(1));out.add(n.replace(/(.)\1+/g,"$1"))} // missing first letter, doubled letters
+  return [...out].filter(Boolean).slice(0,5);
+}
+let searchSeq=0,searchResults=[];
+async function doSearch(q,quiet=false){
+  q=q.trim();const out=document.getElementById("searchOut");
+  if(q.length<2){if(!quiet)out.innerHTML=`<p class="sub">Search any movie, then tap it to see related movies.</p>`;return}
+  searchQ=q;const seq=++searchSeq;
+  if(!quiet||!searchResults.length)out.innerHTML=`<div class="loading"><span class="spinner"></span>Searching…</div>`;
+  const found=new Map(),add=(m,pop)=>{if(!m)return;const e=found.get(m.id);if(e){e.pop=Math.max(e.pop,pop||0)}else found.set(m.id,{m,pop:pop||0})};
+  const tmdbQ=v=>tmdb("/search/movie",{query:v,include_adult:"false"}).then(d=>(d.results||[]).forEach(t=>add(fromTmdb(t),t.vote_count||0))).catch(()=>{});
+  const traktQ=v=>trakt("/search/movie?extended=full&limit=20&query="+encodeURIComponent(v),{auth:false}).then(d=>(d||[]).forEach(x=>add(fromTrakt(x.movie),(x.movie?.votes)||0))).catch(()=>{});
+  // round 1: exact query on both services
+  await Promise.all([tmdbQ(q),traktQ(q)]);
+  // round 2: if nothing looks close, try spelling variants
+  const best=()=>Math.max(0,...[...found.values()].map(x=>sim(x.m.title,q)));
+  if(best()<.8){await Promise.all(variants(q).slice(1).flatMap(v=>[tmdbQ(v),traktQ(v)]))}
+  if(seq!==searchSeq)return; // a newer search started
+  const ranked=[...found.values()].map(x=>({m:x.m,score:sim(x.m.title,q)*0.8+Math.min(1,Math.log10((x.pop||0)+1)/4)*0.2}))
+    .filter(x=>x.score>.35).sort((a,b)=>b.score-a.score).map(x=>x.m).slice(0,30);
+  searchResults=ranked;lists.search=ranked;
+  if(!ranked.length){out.innerHTML=`<div class="empty">No movies found for “${esc(q)}”. Check the spelling or try fewer words.</div>`;return}
+  const top=ranked[0],rest=ranked.slice(1);
+  const exact=norm(top.title)===norm(q);
+  out.innerHTML=`<p class="sub">${exact?"Top match":"Did you mean…"}</p>${heroHtml(top,"search")}
+    ${rest.length?`<h2 style="margin:6px 0 4px">Other matches</h2><p class="sub">Tap a poster for details and related movies.</p>${grid(rest,"search")}`:""}`;
+  enrich(ranked);heroPoster(top);
+}
+function heroHtml(m,src){
+  const x=meta[m.id]||{},p=x.poster||m.poster,inWL=U.watchlist.has(m.id),r=U.rated.get(m.id),seen=U.watched.has(m.id);
+  const status=r?(r>=7?"👍 You liked it":"👎 You didn’t like it"):seen?"✓ Watched":inWL?"🔖 On your watchlist":"";
+  return `<div class="hero" id="heroCard" data-id="${m.id}">${p?`<img src="${IMG}w342${p}" alt="">`:`<div class="ph" style="background:${fbBg(m.title)}"></div>`}
+    <div><h3>${esc(m.title)}</h3><div class="meta">${[m.year||x.year,(x.runtime||m.runtime)?(x.runtime||m.runtime)+" min":"",(m.vote||x.vote)?"★ "+(m.vote||x.vote):""].filter(Boolean).join(" · ")}${status?" · "+status:""}</div>
+     <p class="ov">${esc(x.overview||m.overview||"")}</p>
+     <div class="row"><button class="btn small" data-q="wl" data-id="${m.id}" data-src="${src}">${inWL?"✓ Saved":"＋ Watchlist"}</button>${src==="search"?`<button class="btn small ghost" data-rel="${m.id}">🔎 Related</button>`:""}<button class="btn small ghost" data-open="${m.id}" data-src="${src}">More</button></div></div></div>`;
+}
+function restoreResults(){const out=document.getElementById("searchOut");const top=searchResults[0],rest=searchResults.slice(1);lists.search=searchResults;
+  out.innerHTML=`<p class="sub">${norm(top.title)===norm(searchQ)?"Top match":"Did you mean…"}</p>${heroHtml(top,"search")}${rest.length?`<h2 style="margin:6px 0 4px">Other matches</h2><p class="sub">Tap a poster for details and related movies.</p>${grid(rest,"search")}`:""}`;window.scrollTo(0,0)}
+function heroPoster(m){if(!needMeta(m))return;enrich([m]);setTimeout(()=>{const h=document.getElementById("heroCard");const pp=meta[m.id]?.poster;if(h&&h.dataset.id===m.id&&pp&&!h.querySelector("img")){h.querySelector(".ph")?.replaceWith(Object.assign(document.createElement("img"),{src:IMG+"w342"+pp}));const o=h.querySelector(".ov");if(o&&!o.textContent)o.textContent=meta[m.id].overview||""}},1200)}
 const key=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"");
 async function showRelated(m){
   closeSheet();switchTab("search");
   const out=document.getElementById("searchOut");
   lists.match=[m];
-  const x=meta[m.id]||{},p=x.poster||m.poster,inWL=U.watchlist.has(m.id),r=U.rated.get(m.id),seen=U.watched.has(m.id);
-  const status=r?(r>=7?"👍 You liked it":"👎 You didn’t like it"):seen?"✓ Watched":inWL?"🔖 On your watchlist":"";
-  out.innerHTML=`<div class="row" style="justify-content:flex-end;margin:8px 0 0"><button class="btn ghost small" id="backToResults">${searchQ?"← All results":"✕"}</button></div>
-   <div class="hero" id="heroCard">${p?`<img src="${IMG}w342${p}" alt="">`:`<div class="ph" style="background:${fbBg(m.title)}"></div>`}
-    <div><h3>${esc(m.title)}</h3><div class="meta">${[m.year||x.year,(x.runtime||m.runtime)?(x.runtime||m.runtime)+" min":"",(m.vote||x.vote)?"★ "+(m.vote||x.vote):""].filter(Boolean).join(" · ")}${status?" · "+status:""}</div>
-     <p class="ov">${esc(x.overview||m.overview||"")}</p>
-     <div class="row"><button class="btn small" data-q="wl" data-id="${m.id}" data-src="match">${inWL?"✓ Saved":"＋ Watchlist"}</button><button class="btn small ghost" data-open="${m.id}" data-src="match">More options</button></div></div></div>
-   <h2 style="margin:0 0 4px">Like ${esc(m.title)}</h2><div class="loading"><span class="spinner"></span>Finding related movies…</div>`;
-  if(needMeta(m)){enrich([m]);setTimeout(()=>{const h=document.getElementById("heroCard");const pp=meta[m.id]?.poster;if(h&&pp&&!h.querySelector("img")){h.querySelector(".ph")?.replaceWith(Object.assign(document.createElement("img"),{src:IMG+"w342"+pp}));const o=h.querySelector(".ov");if(o&&!o.textContent)o.textContent=meta[m.id].overview||""}},1200)}
+  out.innerHTML=`<div class="row" style="justify-content:flex-end;margin:8px 0 0"><button class="btn ghost small" id="backToResults">${searchQ?"← Back to results":"✕"}</button></div>
+   ${heroHtml(m,"match")}<h2 style="margin:0 0 4px">Like ${esc(m.title)}</h2><div class="loading"><span class="spinner"></span>Finding related movies…</div>`;
+  heroPoster(m);
   window.scrollTo(0,0);
   try{
     let rel=[];
@@ -459,7 +503,7 @@ async function act(a,m){
     if(token&&m.trakt)trakt("/recommendations/movies/"+m.trakt,{method:"DELETE"}).catch(()=>{});
   }else if(a==="related"){showRelated(m);return}
   if(document.getElementById("v-list").classList.contains("on"))renderWatchlist();
-  if(lists.match[0]&&lists.match[0].id===id){const hb=document.querySelector('#heroCard [data-q="wl"]');if(hb)hb.textContent=U.watchlist.has(id)?"✓ Saved":"＋ Watchlist"}
+  {const hc=document.getElementById("heroCard");const hb=hc&&hc.dataset.id===id&&hc.querySelector('[data-q="wl"]');if(hb)hb.textContent=U.watchlist.has(id)?"✓ Saved":"＋ Watchlist"}
   if(sheetMovie&&sheetMovie.id===id){if(a==="wl"||a==="seen")openSheet(m);else closeSheet()}
 }
 function saveLocal(){
@@ -488,11 +532,24 @@ async function loadTraktSets(){
 function b64url(buf){return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
 function randStr(n=64){const a=new Uint8Array(n);crypto.getRandomValues(a);return b64url(a).slice(0,n)}
 async function challenge(v){return b64url(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(v)))}
-function saveToken(t){token={access_token:t.access_token,refresh_token:t.refresh_token,expires_at:(t.created_at?t.created_at*1000:Date.now())+(t.expires_in||86400)*1000};ls.set("token",token)}
-async function refreshToken(){
-  if(!token?.refresh_token)return false;
-  const r=await fetch(TRAKT_API+"/oauth/token",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({refresh_token:token.refresh_token,client_id:cfg.traktId,redirect_uri:REDIRECT,grant_type:"refresh_token"})});
-  if(!r.ok)return false;saveToken(await r.json());return true;
+function saveToken(t){token={access_token:t.access_token,refresh_token:t.refresh_token||token?.refresh_token,expires_at:(t.created_at?t.created_at*1000:Date.now())+(t.expires_in||86400)*1000};ls.set("token",token)}
+// Only ONE refresh at a time: Trakt refresh tokens work once, so parallel refreshes knock each other out.
+let refreshing=null;
+function refreshToken(){
+  if(refreshing)return refreshing;
+  refreshing=(async()=>{
+    // another tab may have refreshed already
+    const stored=ls.get("token",null);
+    if(stored&&token&&stored.access_token!==token.access_token&&stored.expires_at>Date.now()+3600e3){token=stored;return true}
+    if(!token?.refresh_token)return false;
+    let r;
+    try{r=await fetch(TRAKT_API+"/oauth/token",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({refresh_token:token.refresh_token,client_id:cfg.traktId,redirect_uri:REDIRECT,grant_type:"refresh_token"})})}
+    catch(e){return "offline"}          // network hiccup: keep the sign-in
+    if(r.ok){saveToken(await r.json());return true}
+    if(r.status===400||r.status===401)return false; // refresh token really is dead
+    return "offline";                    // Trakt down / rate limited: keep the sign-in
+  })().finally(()=>{setTimeout(()=>{refreshing=null},0)});
+  return refreshing;
 }
 let devicePoll=null;
 async function startDevice(){
@@ -584,12 +641,14 @@ document.querySelector("nav.tabs").addEventListener("click",e=>{const b=e.target
 document.getElementById("acct").addEventListener("click",()=>switchTab("settings"));
 document.getElementById("scrim").addEventListener("click",closeSheet);
 document.getElementById("fyMore").addEventListener("click",()=>showMoreFY(false));
+let typeT=null;document.getElementById("q").addEventListener("input",e=>{clearTimeout(typeT);const v=e.target.value;typeT=setTimeout(()=>doSearch(v,true),450)});
 document.getElementById("searchForm").addEventListener("submit",e=>{e.preventDefault();const i=document.getElementById("q");i.blur();doSearch(i.value)});
 document.body.addEventListener("click",e=>{
   const go=e.target.closest("[data-go]");if(go){switchTab(go.dataset.go);return}
   const q=e.target.closest("[data-q]");if(q){e.stopPropagation();act(q.dataset.q,findMovie(q.dataset.id,q.dataset.src));return}
   const o=e.target.closest("[data-open]");if(o){const m=findMovie(o.dataset.open,o.dataset.src);if(o.dataset.src==="search")showRelatedOrOpen(m);else openSheet(m);return}
   const a=e.target.closest("#sheet [data-a]");if(a){act(a.dataset.a,sheetMovie);return}
+  const rl=e.target.closest("[data-rel]");if(rl){showRelated(findMovie(rl.dataset.rel,"search"));return}
   const lb=e.target.closest("[data-lib]");if(lb){libView=lb.dataset.lib;renderWatchlist();return}
   const fb=e.target.closest("[data-f]");if(fb){setFilter(fb.dataset.f,fb.dataset.val);return}
   const id=e.target.id;
@@ -610,10 +669,10 @@ document.body.addEventListener("click",e=>{
   }
   else if(id==="signout"){signOut();loadForYou()}
   else if(id==="resync"){boot().then(()=>toast("Synced ✓"))}
-  else if(id==="backToResults"){if(searchQ)doSearch(searchQ,false);else document.getElementById("searchOut").innerHTML=""}
+  else if(id==="backToResults"){if(searchQ&&searchResults.length){restoreResults()}else if(searchQ)doSearch(searchQ);else document.getElementById("searchOut").innerHTML=""}
   else if(id==="saveKeys"){ls.set("tmdb",document.getElementById("tmdbKey").value.trim());ls.set("traktId",document.getElementById("traktId").value.trim()||DEFAULT_TRAKT_ID);testKeys()}
 });
-function showRelatedOrOpen(m){openSheet(m)}
+function showRelatedOrOpen(m){showRelated(m)}
 async function testKeys(){
   const s=document.getElementById("keyStatus");s.textContent="Checking…";
   let ok=[];
