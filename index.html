@@ -91,6 +91,11 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
 .fpanel h4{margin:12px 0 6px;font-size:13px;color:var(--muted);font-weight:500}
 .fpanel h4:first-child{margin-top:2px}
 .fpanel .seg{margin:0}
+.hero{display:grid;grid-template-columns:110px 1fr;gap:14px;background:var(--panel);border:1px solid var(--accent);border-radius:var(--r);padding:12px;margin:6px 0 16px}
+.hero img,.hero .ph{width:110px;aspect-ratio:2/3;border-radius:10px;object-fit:cover;background:var(--panel2)}
+.hero h3{font-family:"DM Serif Display",serif;font-weight:400;font-size:22px;margin:0 0 4px;line-height:1.1}
+.hero .meta{color:var(--muted);font-size:13px;margin-bottom:6px}
+.hero .ov{font-size:13.5px;line-height:1.4;margin:0 0 10px;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:12px 0}
 .card label{display:block;font-size:13px;color:var(--muted);margin:10px 0 6px}
 .code{font-family:ui-monospace,Menlo,monospace;font-size:30px;letter-spacing:4px;color:var(--accent);text-align:center;margin:12px 0;user-select:all}
@@ -281,7 +286,7 @@ function pump(){while(active<6&&queue.length){const id=queue.shift();active++;
 function paintPoster(id){const p=meta[id]?.poster;if(!p)return;document.querySelectorAll(`.tile[data-id="${id}"] .pst`).forEach(el=>{if(!el.querySelector("img"))el.querySelector('.fb')?.remove();el.insertAdjacentHTML('afterbegin',`<img src="${IMG}w342${p}" alt="" loading="lazy">`)})}
 
 /* ================= rendering ================= */
-const lists={fy:[],search:[],related:[],wl:[],liked:[]};
+const lists={fy:[],search:[],related:[],wl:[],liked:[],match:[]};
 function tile(m,src){
   const p=meta[m.id]?.poster||m.poster;const inWL=U.watchlist.has(m.id);
   return `<div class="tile" data-id="${m.id}" data-src="${src}">
@@ -290,7 +295,7 @@ function tile(m,src){
     <div class="ttl">${esc(m.title)}</div><div class="yr">${m.year||""}</div></div>`;
 }
 function grid(list,src){return `<div class="grid">${list.map(m=>tile(m,src)).join("")}</div>`}
-function findMovie(id,src){return (lists[src]||[]).find(m=>m.id===id)||[...lists.fy,...lists.search,...lists.related,...lists.wl,...lists.liked].find(m=>m.id===id)||(sheetMovie&&sheetMovie.id===id?sheetMovie:null)}
+function findMovie(id,src){return (lists[src]||[]).find(m=>m.id===id)||[...lists.fy,...lists.search,...lists.related,...lists.wl,...lists.liked,...lists.match].find(m=>m.id===id)||(sheetMovie&&sheetMovie.id===id?sheetMovie:null)}
 function removeTile(id){document.querySelectorAll(`.tile[data-id="${id}"]`).forEach(t=>{if(t.dataset.src==="liked")return;if(t.dataset.src!=="wl"||!U.watchlist.has(id)){t.classList.add("gone");setTimeout(()=>t.remove(),260)}})}
 
 /* ================= For You ================= */
@@ -343,7 +348,7 @@ async function showMoreFY(reset){
 
 /* ================= Search & related ================= */
 let searchQ="";
-async function doSearch(q){
+async function doSearch(q,jump=true){
   q=q.trim();if(!q)return;searchQ=q;const out=document.getElementById("searchOut");
   out.innerHTML=`<div class="loading"><span class="spinner"></span>Searching…</div>`;
   try{
@@ -355,14 +360,23 @@ async function doSearch(q){
     const top=lists.search[0];
     out.innerHTML=`<p class="sub">Results for “${esc(q)}” — tap one to see details and related movies.</p>${grid(lists.search,"search")}`;
     enrich(lists.search);
-    if(lists.search.length&&res[0]&&key(res[0].title)===key(q))showRelated(top);
+    if(jump&&res[0]&&key(res[0].title)===key(q))showRelated(top);
   }catch(e){out.innerHTML=`<div class="empty">Search failed (${esc(e.message)}). Add your TMDB key in Settings.</div>`}
 }
 const key=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"");
 async function showRelated(m){
   closeSheet();switchTab("search");
   const out=document.getElementById("searchOut");
-  out.innerHTML=`<div class="row" style="justify-content:space-between;margin:8px 0"><h2 style="margin:0">Like ${esc(m.title)}</h2><button class="btn ghost small" id="backToResults">${searchQ?"← Results":"✕"}</button></div><div class="loading"><span class="spinner"></span>Finding related movies…</div>`;
+  lists.match=[m];
+  const x=meta[m.id]||{},p=x.poster||m.poster,inWL=U.watchlist.has(m.id),r=U.rated.get(m.id),seen=U.watched.has(m.id);
+  const status=r?(r>=7?"👍 You liked it":"👎 You didn’t like it"):seen?"✓ Watched":inWL?"🔖 On your watchlist":"";
+  out.innerHTML=`<div class="row" style="justify-content:flex-end;margin:8px 0 0"><button class="btn ghost small" id="backToResults">${searchQ?"← All results":"✕"}</button></div>
+   <div class="hero" id="heroCard">${p?`<img src="${IMG}w342${p}" alt="">`:`<div class="ph" style="background:${fbBg(m.title)}"></div>`}
+    <div><h3>${esc(m.title)}</h3><div class="meta">${[m.year||x.year,(x.runtime||m.runtime)?(x.runtime||m.runtime)+" min":"",(m.vote||x.vote)?"★ "+(m.vote||x.vote):""].filter(Boolean).join(" · ")}${status?" · "+status:""}</div>
+     <p class="ov">${esc(x.overview||m.overview||"")}</p>
+     <div class="row"><button class="btn small" data-q="wl" data-id="${m.id}" data-src="match">${inWL?"✓ Saved":"＋ Watchlist"}</button><button class="btn small ghost" data-open="${m.id}" data-src="match">More options</button></div></div></div>
+   <h2 style="margin:0 0 4px">Like ${esc(m.title)}</h2><div class="loading"><span class="spinner"></span>Finding related movies…</div>`;
+  if(needMeta(m)){enrich([m]);setTimeout(()=>{const h=document.getElementById("heroCard");const pp=meta[m.id]?.poster;if(h&&pp&&!h.querySelector("img")){h.querySelector(".ph")?.replaceWith(Object.assign(document.createElement("img"),{src:IMG+"w342"+pp}));const o=h.querySelector(".ov");if(o&&!o.textContent)o.textContent=meta[m.id].overview||""}},1200)}
   window.scrollTo(0,0);
   try{
     let rel=[];
@@ -445,6 +459,7 @@ async function act(a,m){
     if(token&&m.trakt)trakt("/recommendations/movies/"+m.trakt,{method:"DELETE"}).catch(()=>{});
   }else if(a==="related"){showRelated(m);return}
   if(document.getElementById("v-list").classList.contains("on"))renderWatchlist();
+  if(lists.match[0]&&lists.match[0].id===id){const hb=document.querySelector('#heroCard [data-q="wl"]');if(hb)hb.textContent=U.watchlist.has(id)?"✓ Saved":"＋ Watchlist"}
   if(sheetMovie&&sheetMovie.id===id){if(a==="wl"||a==="seen")openSheet(m);else closeSheet()}
 }
 function saveLocal(){
@@ -595,7 +610,7 @@ document.body.addEventListener("click",e=>{
   }
   else if(id==="signout"){signOut();loadForYou()}
   else if(id==="resync"){boot().then(()=>toast("Synced ✓"))}
-  else if(id==="backToResults"){if(searchQ)doSearch(searchQ);else document.getElementById("searchOut").innerHTML=""}
+  else if(id==="backToResults"){if(searchQ)doSearch(searchQ,false);else document.getElementById("searchOut").innerHTML=""}
   else if(id==="saveKeys"){ls.set("tmdb",document.getElementById("tmdbKey").value.trim());ls.set("traktId",document.getElementById("traktId").value.trim()||DEFAULT_TRAKT_ID);testKeys()}
 });
 function showRelatedOrOpen(m){openSheet(m)}
