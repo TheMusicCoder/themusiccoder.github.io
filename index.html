@@ -128,10 +128,10 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
   <!-- SEARCH -->
   <section class="view" id="v-search">
     <form class="search" id="searchForm">
-      <input type="search" id="q" placeholder="Search a movie…" autocomplete="off" enterkeyhint="search">
+      <input type="search" id="q" placeholder="A title, or “movies set in a graveyard”…" autocomplete="off" enterkeyhint="search">
       <button class="btn" type="submit">Search</button>
     </form>
-    <div id="searchOut"><p class="sub">Search any movie, then tap it to see related movies.</p></div>
+    <div id="searchOut"><p class="sub">Search a title, or describe what you want — like “movies set in a graveyard”, “80s horror about a haunted house” or “movies like Insidious”.</p></div>
   </section>
 
   <!-- WATCHLIST -->
@@ -378,11 +378,71 @@ function variants(q){
   return [...out].filter(Boolean).slice(0,5);
 }
 let searchSeq=0,searchResults=[];
+/* ---- premise search: "movies like X", "movies set in a graveyard" ---- */
+const STOP=new Set("movie movies film films flick flicks show me find some any good best great top a an the of in on at to for with about that where which who is are set takes take place places featuring involving like similar similar to kind kinds type types sort i want watch something stuff and or from by into around during".split(" "));
+const SYN={graveyard:["graveyard","cemetery"],cemetery:["cemetery","graveyard"],zombies:["zombie"],vampires:["vampire"],ghosts:["ghost"],aliens:["alien"],witches:["witch"],demons:["demon"],sharks:["shark"],robots:["robot"],dinosaurs:["dinosaur"],heists:["heist"],cops:["police"],spies:["spy"],"haunted house":["haunted house"],possession:["possession","demonic possession"],"time travel":["time travel"],space:["space","outer space"],prison:["prison"],cults:["cult"],"serial killers":["serial killer"],"serial killer":["serial killer"]};
+const GWORDS={horror:"horror",scary:"horror",creepy:"horror",comedy:"comedy",comedies:"comedy",funny:"comedy",action:"action",thriller:"thriller",thrillers:"thriller",romance:"romance",romantic:"romance",animated:"animation",animation:"animation",cartoon:"animation",documentary:"documentary",documentaries:"documentary",drama:"drama",dramas:"drama",fantasy:"fantasy",mystery:"mystery",mysteries:"mystery",western:"western",westerns:"western",war:"war",musical:"music",crime:"crime",family:"family",kids:"family","sci-fi":"science-fiction",scifi:"science-fiction","science fiction":"science-fiction",adventure:"adventure"};
+function parsePremise(q){
+  const low=q.toLowerCase().trim();
+  const like=low.match(/^(?:(?:show me |find |some )?(?:movies?|films?|something|stuff)\s+)?(?:like|similar to|in the vein of|that feel like)\s+(.+)$/);
+  if(like)return {type:"like",title:like[1].replace(/[?.!]+$/,"")};
+  const words=low.replace(/[^a-z0-9\- ]/g," ").split(/\s+/).filter(Boolean);
+  const descriptive=/\b(movies?|films?|about|set in|takes? place|where|featuring|involving|with a|with an)\b/.test(low)||Object.keys(GWORDS).some(g=>words.includes(g));
+  if(!descriptive)return null;
+  let rest=" "+low.replace(/[^a-z0-9\- ]/g," ")+" ";
+  const genres=new Set();let decade=null;
+  const dm=rest.match(/\b(?:19|20)?([0-9])0'?s\b/);if(dm){const d=Number(dm[1]);decade=(d>=3?1900:2000)+d*10;rest=rest.replace(dm[0]," ")}
+  Object.keys(GWORDS).sort((a,b)=>b.length-a.length).forEach(g=>{if(rest.includes(" "+g+" ")){genres.add(GWORDS[g]);rest=rest.replace(" "+g+" "," ")}});
+  const terms=rest.split(/\s+/).filter(w=>w&&!STOP.has(w)&&w.length>2);
+  return {type:"premise",genres:[...genres],decade,terms};
+}
+async function keywordIds(terms){
+  const cands=new Set();
+  for(let i=0;i<terms.length-1;i++)cands.add(terms[i]+" "+terms[i+1]);
+  terms.forEach(t=>cands.add(t));
+  [...cands].forEach(c=>(SYN[c]||[]).forEach(x=>cands.add(x)));
+  [...cands].forEach(c=>{if(c.endsWith("s")&&c.length>4)cands.add(c.slice(0,-1))});
+  const res=await Promise.all([...cands].slice(0,10).map(c=>tmdb("/search/keyword",{query:c}).then(d=>({c,list:d.results||[]})).catch(()=>({c,list:[]}))));
+  const ids=new Map();
+  const hits=res.map(({c,list})=>({c,ks:list.slice(0,6).filter(k=>norm(k.name)===norm(c)||(c.includes(" ")&&sim(k.name,c)>.85))})).filter(x=>x.ks.length);
+  const phraseWords=new Set(hits.filter(h=>h.c.includes(" ")).flatMap(h=>h.c.split(" ")));
+  hits.filter(h=>h.c.includes(" ")||!phraseWords.has(h.c)).forEach(h=>h.ks.forEach(k=>ids.set(k.id,k.name)));
+  return ids;
+}
+async function premiseSearch(q,p,seq){
+  const out=document.getElementById("searchOut");
+  if(p.type==="like"){
+    let m=null;
+    try{const d=await tmdb("/search/movie",{query:p.title,include_adult:"false"});const r=(d.results||[]).map(t=>({t,s:sim(t.title,p.title)*0.8+Math.min(1,Math.log10((t.vote_count||0)+1)/4)*0.2})).sort((a,b)=>b.s-a.s);if(r[0])m=fromTmdb(r[0].t)}catch(e){}
+    if(seq!==searchSeq)return true;
+    if(m){showRelated(m);return true}
+    return false;
+  }
+  const kw=p.terms.length?await keywordIds(p.terms):new Map();
+  if(seq!==searchSeq)return true;
+  if(!kw.size&&!p.genres.length&&!p.decade)return false;
+  const base={sort_by:"popularity.desc","vote_count.gte":"40",include_adult:"false"};
+  if(p.genres.length)base.with_genres=p.genres.map(k=>GEN.find(g=>g[0]===k)[2]).join(",");
+  if(p.decade){base["primary_release_date.gte"]=p.decade+"-01-01";base["primary_release_date.lte"]=(p.decade+9)+"-12-31"}
+  let results=[];
+  const pages=async extra=>{for(const pg of [1,2]){try{const d=await tmdb("/discover/movie",{...base,...extra,page:String(pg)});results=results.concat((d.results||[]).map(fromTmdb).filter(Boolean));if(pg>=(d.total_pages||1))break}catch(e){break}}};
+  if(kw.size)await pages({with_keywords:[...kw.keys()].join("|")});
+  if(!results.length)await pages({});
+  if(seq!==searchSeq)return true;
+  const seen=new Set();results=results.filter(m=>!seen.has(m.id)&&seen.add(m.id));
+  lists.search=results;searchResults=[];
+  const about=[...new Set([...kw.values()])].slice(0,4).join(", ");
+  const label=[about&&("about "+about),p.genres.map(k=>GEN.find(g=>g[0]===k)[1]).join(" / "),p.decade&&(p.decade+"s")].filter(Boolean).join(" · ");
+  out.innerHTML=results.length?`<p class="sub">Movies ${esc(label||"matching that")}. Tap a poster for details and related movies.</p>${grid(results,"search")}`:`<div class="empty">Couldn’t find movies for that. Try simpler words, like “graveyard horror”.</div>`;
+  enrich(results);return true;
+}
 async function doSearch(q,quiet=false){
   q=q.trim();const out=document.getElementById("searchOut");
   if(q.length<2){if(!quiet)out.innerHTML=`<p class="sub">Search any movie, then tap it to see related movies.</p>`;return}
   searchQ=q;const seq=++searchSeq;
   if(!quiet||!searchResults.length)out.innerHTML=`<div class="loading"><span class="spinner"></span>Searching…</div>`;
+  const prem=parsePremise(q);
+  if(prem&&cfg.tmdb){if(quiet&&prem.type==="premise"&&!/\s$/.test(q)&&q.split(" ").length<3)return; if(await premiseSearch(q,prem,seq).catch(()=>false))return}
   const found=new Map(),add=(m,pop)=>{if(!m)return;const e=found.get(m.id);if(e){e.pop=Math.max(e.pop,pop||0)}else found.set(m.id,{m,pop:pop||0})};
   const tmdbQ=v=>tmdb("/search/movie",{query:v,include_adult:"false"}).then(d=>(d.results||[]).forEach(t=>add(fromTmdb(t),t.vote_count||0))).catch(()=>{});
   const traktQ=v=>trakt("/search/movie?extended=full&limit=20&query="+encodeURIComponent(v),{auth:false}).then(d=>(d||[]).forEach(x=>add(fromTrakt(x.movie),(x.movie?.votes)||0))).catch(()=>{});
@@ -641,7 +701,7 @@ document.querySelector("nav.tabs").addEventListener("click",e=>{const b=e.target
 document.getElementById("acct").addEventListener("click",()=>switchTab("settings"));
 document.getElementById("scrim").addEventListener("click",closeSheet);
 document.getElementById("fyMore").addEventListener("click",()=>showMoreFY(false));
-let typeT=null;document.getElementById("q").addEventListener("input",e=>{clearTimeout(typeT);const v=e.target.value;typeT=setTimeout(()=>doSearch(v,true),450)});
+let typeT=null;document.getElementById("q").addEventListener("input",e=>{clearTimeout(typeT);const v=e.target.value;typeT=setTimeout(()=>doSearch(v,true),v.trim().split(" ").length>2?900:450)});
 document.getElementById("searchForm").addEventListener("submit",e=>{e.preventDefault();const i=document.getElementById("q");i.blur();doSearch(i.value)});
 document.body.addEventListener("click",e=>{
   const go=e.target.closest("[data-go]");if(go){switchTab(go.dataset.go);return}
