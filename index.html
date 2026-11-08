@@ -202,8 +202,9 @@ const DECADES=[["2020s",2020,2029],["2010s",2010,2019],["2000s",2000,2009],["199
 const RATINGS=[["Any",0],["6+",6],["7+",7],["8+",8]];
 const LENGTHS=[["Any",""],["Under 90 min","lt90"],["Under 2 hrs","lt120"],["2 hrs+","ge120"]];
 const CERTS=["G","PG","PG-13","R","NC-17"];
-let F=Object.assign({g:[],d:[],r:0,len:"",c:[]},ls.get("filters",{}));if(!Array.isArray(F.c))F.c=[];
-const fActive=()=>F.g.length||F.d.length||F.r||F.len||F.c.length;
+let F=Object.assign({g:[],d:[],r:0,len:"",c:[],y1:0,y2:0},ls.get("filters",{}));if(!Array.isArray(F.c))F.c=[];
+const fActive=()=>F.g.length||F.d.length||F.r||F.len||F.c.length||F.y1||F.y2;
+const yearLabel=()=>F.y1&&F.y2?(F.y1===F.y2?String(F.y1):F.y1+"–"+F.y2):F.y1?F.y1+" & later":F.y2?F.y2+" & earlier":"";
 const certOf=m=>m.cert||(meta[m.id]||{}).cert;
 const certUnknown=m=>F.c.length&&!m.certOk&&!certOf(m);
 function gKeys(m){const x=meta[m.id]||{};const src=m.gids?m.gids.map(i=>GBYID[i]):(m.genres||x.genres||[]).map(n=>GBYNAME[String(n).toLowerCase()]);return src.filter(Boolean)}
@@ -212,18 +213,21 @@ function passes(m){
   const x=meta[m.id]||{};
   if(F.g.length){const gs=gKeys(m);if(gs.length&&!F.g.some(g=>gs.includes(g)))return false;if(!gs.length)return false}
   if(F.d.length){const y=Number(m.year||x.year);if(!y||!F.d.some(k=>{const d=DECADES.find(z=>z[0]===k);return y>=d[1]&&y<=d[2]}))return false}
+  if(F.y1||F.y2){const y=Number(m.year||x.year);if(!y||(F.y1&&y<F.y1)||(F.y2&&y>F.y2))return false}
   if(F.r){const v=m.vote||x.vote;if(!v||v<F.r)return false}
   if(F.len){const rt=m.runtime||x.runtime;if(rt){if(F.len==="lt90"&&rt>=90)return false;if(F.len==="lt120"&&rt>=120)return false;if(F.len==="ge120"&&rt<120)return false}}
   if(F.c.length&&!m.certOk){const c=certOf(m);if(!c||!F.c.includes(c))return false}
   return true;
 }
 function renderFilters(){
-  const n=F.g.length+F.d.length+(F.r?1:0)+(F.len?1:0)+F.c.length;
-  const chips=[...F.g.map(k=>GEN.find(g=>g[0]===k)[1]),...F.d,...(F.r?[F.r+"+ ★"]:[]),...(F.len?[LENGTHS.find(l=>l[1]===F.len)[0]]:[]),...F.c];
+  const n=F.g.length+F.d.length+(F.r?1:0)+(F.len?1:0)+F.c.length+((F.y1||F.y2)?1:0);
+  const chips=[...F.g.map(k=>GEN.find(g=>g[0]===k)[1]),...F.d,...((F.y1||F.y2)?[yearLabel()]:[]),...(F.r?[F.r+"+ ★"]:[]),...(F.len?[LENGTHS.find(l=>l[1]===F.len)[0]]:[]),...F.c];
   document.getElementById("fbar").innerHTML=`<button class="fbtn ${n?"on":""}" id="ftoggle">⚙︎ Filters${n?` (${n})`:""}</button>${chips.map(c=>`<span class="chip">${esc(c)}</span>`).join("")}${n?`<button class="fbtn" id="fclear">Clear</button>`:""}`;
   const seg=(name,opts,isOn)=>`<div class="seg">${opts.map(([l,v])=>`<button data-f="${name}" data-val="${v}" class="${isOn(v)?"on":""}">${l}</button>`).join("")}</div>`;
   document.getElementById("fpanel").innerHTML=`<h4>Genres (any of)</h4>${seg("g",GEN.map(g=>[g[1],g[0]]),v=>F.g.includes(v))}
     <h4>Decade</h4>${seg("d",DECADES.map(d=>[d[0],d[0]]),v=>F.d.includes(v))}
+    <h4>Specific years</h4><div class="row"><input type="number" inputmode="numeric" id="fy1" placeholder="From (e.g. 2005)" min="1900" max="2100" value="${F.y1||""}" style="flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);font:inherit;font-size:16px;padding:9px 10px"><span class="sub" style="margin:0">to</span><input type="number" inputmode="numeric" id="fy2" placeholder="To (e.g. 2012)" min="1900" max="2100" value="${F.y2||""}" style="flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);font:inherit;font-size:16px;padding:9px 10px"></div>
+    <p class="sub" style="margin:6px 0 0;font-size:12px">For one year, enter it in both boxes. Leave one empty for “and later” / “and earlier”.</p>
     <h4>Rating</h4>${seg("r",RATINGS,v=>Number(v)===F.r)}
     <h4>Age rating (any of)</h4>${seg("c",CERTS.map(c=>[c,c]),v=>F.c.includes(v))}
     <h4>Length</h4>${seg("len",LENGTHS,v=>v===F.len)}
@@ -245,6 +249,8 @@ async function discoverMore(){
   const p={sort_by:"popularity.desc","vote_count.gte":"150",include_adult:"false",page:String(disc.page+1)};
   if(F.g.length)p.with_genres=F.g.map(k=>GEN.find(g=>g[0]===k)[2]).join("|");
   if(F.d.length){const ds=F.d.map(k=>DECADES.find(z=>z[0]===k));p["primary_release_date.gte"]=Math.min(...ds.map(d=>d[1]))+"-01-01";p["primary_release_date.lte"]=Math.max(...ds.map(d=>d[2]))+"-12-31"}
+  if(F.y1){const g=p["primary_release_date.gte"];const v=F.y1+"-01-01";p["primary_release_date.gte"]=!g||v>g?v:g}
+  if(F.y2){const l=p["primary_release_date.lte"];const v=F.y2+"-12-31";p["primary_release_date.lte"]=!l||v<l?v:l}
   if(F.r)p["vote_average.gte"]=String(F.r);
   if(F.len==="lt90")p["with_runtime.lte"]="89";if(F.len==="lt120")p["with_runtime.lte"]="119";if(F.len==="ge120")p["with_runtime.gte"]="120";
   if(F.c.length){p.certification_country="US";p.certification=F.c.join("|")}
@@ -729,6 +735,10 @@ document.querySelector("nav.tabs").addEventListener("click",e=>{const b=e.target
 document.getElementById("acct").addEventListener("click",()=>switchTab("settings"));
 document.getElementById("scrim").addEventListener("click",closeSheet);
 document.getElementById("fyMore").addEventListener("click",()=>showMoreFY(false));
+document.body.addEventListener("change",e=>{if(e.target.id==="fy1"||e.target.id==="fy2"){
+  let a=parseInt(document.getElementById("fy1").value)||0,b=parseInt(document.getElementById("fy2").value)||0;
+  if(a&&(a<1900||a>2100))a=0;if(b&&(b<1900||b>2100))b=0;if(a&&b&&a>b)[a,b]=[b,a];
+  F.y1=a;F.y2=b;ls.set("filters",F);renderFilters();document.getElementById("fpanel").classList.add("on");clearTimeout(fTimer);fTimer=setTimeout(()=>applyFilters(),300)}});
 let typeT=null;document.getElementById("q").addEventListener("input",e=>{clearTimeout(typeT);const v=e.target.value;typeT=setTimeout(()=>doSearch(v,true),v.trim().split(" ").length>2?900:450)});
 document.getElementById("searchForm").addEventListener("submit",e=>{e.preventDefault();const i=document.getElementById("q");i.blur();doSearch(i.value)});
 document.body.addEventListener("click",e=>{
@@ -742,7 +752,7 @@ document.body.addEventListener("click",e=>{
   const id=e.target.id;
   if(id==="ftoggle"){document.getElementById("fpanel").classList.toggle("on");return}
   if(id==="fdone"){document.getElementById("fpanel").classList.remove("on");clearTimeout(fTimer);applyFilters();return}
-  if(id==="fclear"){F={g:[],d:[],r:0,len:"",c:[]};ls.set("filters",F);renderFilters();applyFilters();return}
+  if(id==="fclear"){F={g:[],d:[],r:0,len:"",c:[],y1:0,y2:0};ls.set("filters",F);renderFilters();applyFilters();return}
   if(id==="connect")startDevice();
   else if(id==="altSign")startRedirect();
   else if(id==="backDevice")startDevice();
